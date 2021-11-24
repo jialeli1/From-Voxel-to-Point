@@ -1,0 +1,239 @@
+CLASS_NAMES: ['Vehicle']
+
+DATA_CONFIG:
+    _BASE_CONFIG_: cfgs/dataset_configs/waymo_dataset.yaml
+
+
+MODEL:
+    NAME: FromVoxelToPoint
+
+    VFE:
+        NAME: MeanVFE
+
+    BACKBONE_3D:
+        NAME: VoxelResBackBone8x #VoxelBackBone8x
+
+    MAP_TO_BEV:
+        NAME: HeightCompression
+        NUM_BEV_FEATURES: 256
+
+    BACKBONE_2D:
+        NAME: BaseBEVBackbone
+
+        LAYER_NUMS: [3, 3]
+        LAYER_STRIDES: [1, 2]
+        NUM_FILTERS: [128, 256]
+        UPSAMPLE_STRIDES: [1, 2]
+        NUM_UPSAMPLE_FILTERS: [256, 256]
+
+    DENSE_HEAD:
+        NAME: AnchorHeadSingle
+        CLASS_AGNOSTIC: False
+
+        USE_DIRECTION_CLASSIFIER: True
+        DIR_OFFSET: 0.78539
+        DIR_LIMIT_OFFSET: 0.0
+        NUM_DIR_BINS: 2
+
+        ANCHOR_GENERATOR_CONFIG: [
+            {
+                'class_name': 'Vehicle',
+                'anchor_sizes': [[4.7, 2.1, 1.7]],
+                'anchor_rotations': [0, 1.57],
+                'anchor_bottom_heights': [0],
+                'align_center': False,
+                'feature_map_stride': 8,
+                'matched_threshold': 0.55,
+                'unmatched_threshold': 0.4
+            },
+        ]
+
+        TARGET_ASSIGNER_CONFIG:
+            NAME: AxisAlignedTargetAssigner
+            POS_FRACTION: -1.0
+            SAMPLE_SIZE: 512
+            NORM_BY_NUM_EXAMPLES: False
+            MATCH_HEIGHT: False
+            BOX_CODER: ResidualCoder
+
+        LOSS_CONFIG:
+            LOSS_WEIGHTS: {
+                'cls_weight': 1.0,
+                'loc_weight': 2.0,
+                'dir_weight': 0.2,
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            }
+
+
+    POST_PFE:
+        NAME: ResidualVoxelToPointDecoder 
+        POINT_SOURCE: raw_points
+        # NUM_KEYPOINTS: 32768 # better but larger GPU memory
+        NUM_KEYPOINTS: 16384
+        NUM_OUTPUT_FEATURES: 128
+        SAMPLE_METHOD: FPS
+
+        FEATURES_SOURCE: ['x_conv4', 'x_conv3', 'x_conv2', 'x_conv1']
+        INIT_BLOCK:
+            SOURCE: x_conv4 # or x_convinput  
+            LATERAL_DOWNSAMPLE_FACTOR: 8    # 
+            BOTTOM_DOWNSAMPLE_FACTOR: 1     # from raw point, 1
+            LATERAL_CHANNELS: 128
+            OUT_CHANNELS: 128
+            NSAMPLE: 3
+        DECODE_BLOCKS:
+            x_conv4:
+                LATERAL_DOWNSAMPLE_FACTOR: 8 # x_conv4
+                BOTTOM_DOWNSAMPLE_FACTOR: 1  # from raw point, 1
+                LATERAL_CHANNELS: 128
+                OUT_CHANNELS: 256
+                NSAMPLE: 3
+            x_conv3:
+                LATERAL_DOWNSAMPLE_FACTOR: 4 # x_conv3
+                BOTTOM_DOWNSAMPLE_FACTOR: 1  # from raw_point, 1
+                LATERAL_CHANNELS: 64
+                OUT_CHANNELS: 192
+                NSAMPLE: 3
+            x_conv2:
+                LATERAL_DOWNSAMPLE_FACTOR: 2 # x_conv2
+                BOTTOM_DOWNSAMPLE_FACTOR: 1  # from raw_point, 1
+                LATERAL_CHANNELS: 32
+                OUT_CHANNELS: 160
+                NSAMPLE: 3
+            x_conv1:
+                LATERAL_DOWNSAMPLE_FACTOR: 1 # x_conv1
+                BOTTOM_DOWNSAMPLE_FACTOR: 1  # from raw_point, 1
+                LATERAL_CHANNELS: 16
+                OUT_CHANNELS: 128
+                NSAMPLE: 3
+        OUT_BLOCK:
+            OUT_CHANNELS: 128
+            NSAMPLE: 3
+        NUM_POINT_BEV_FEATURES: 128
+
+    POINT_HEAD:
+        NAME: PointHeadSimple
+        CLS_FC: [64, 64]
+        CLASS_AGNOSTIC: True
+        USE_POINT_FEATURES_BEFORE_FUSION: False 
+        TARGET_CONFIG:
+            GT_EXTRA_WIDTH: [0.2, 0.2, 0.2]
+        LOSS_CONFIG:
+            LOSS_REG: smooth-l1
+            LOSS_WEIGHTS: {
+                'point_cls_weight': 4.0 
+            }
+
+    ROI_HEAD:
+        NAME: IoUGuidedRoIHead
+        CLASS_AGNOSTIC: True
+
+        ROI_POINT_POOL:
+            POOL_EXTRA_WIDTH: [3.2, 3.2, 3.2] 
+            NUM_SAMPLED_POINTS: 512 
+            DEPTH_NORMALIZER: 70.0
+
+        XYZ_UP_LAYER: [128, 128]
+        CLS_FC: [256, 256] 
+        REG_FC: [256, 256] 
+        DP_RATIO: 0.3 
+        USE_BN: False
+
+        ROI_GRID_POOL:
+            GRID_SIZE: 6
+            SA_CONFIG:
+                NPOINTS: [216] # 6x6x6
+                RADIUS: [[0.8, 1.6]] 
+                NSAMPLE: [[16, 32]]
+                MLPS: [[[64, 64], [64, 64]]] 
+        
+        BEV_GRID_POOL:
+            IN_CHANNELS: 512 # sum(BACKBONE_2D.NUM_UPSAMPLE_FILTERS)
+            OUT_CHANNELS: 128
+
+        GRID_INTERACT:
+            INTERACT_FILTERS: [256, 256]
+        CGE_MODULE:
+            UP_FILTERS: [64, 64]
+            INTERACT_FILTERS: [128]
+
+        FUSE_FILTERS: [256]
+
+        NMS_CONFIG:
+            TRAIN:
+                NMS_TYPE: nms_gpu
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 9000
+                NMS_POST_MAXSIZE: 512
+                NMS_THRESH: 0.80 
+            TEST:
+                NMS_TYPE: nms_gpu
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 9000 
+                NMS_POST_MAXSIZE: 100 
+                NMS_THRESH: 0.85 
+
+        TARGET_CONFIG:
+            BOX_CODER: ResidualCoder
+            ROI_PER_IMAGE: 128
+            FG_RATIO: 0.5
+
+            SAMPLE_ROI_BY_EACH_CLASS: True
+            CLS_SCORE_TYPE: roi_iou 
+
+            CLS_FG_THRESH: 0.75 
+            CLS_BG_THRESH: 0.25
+            CLS_BG_THRESH_LO: 0.1
+            HARD_BG_RATIO: 0.8
+
+            REG_FG_THRESH: 0.55
+
+        LOSS_CONFIG:
+            CLS_LOSS: BinaryCrossEntropy
+            REG_LOSS: smooth-l1
+            IOUSCORE_LOSS: smooth-l1
+            CORNER_LOSS_REGULARIZATION: True
+            LOSS_WEIGHTS: {
+                'rcnn_cls_weight': 1.0,
+                'rcnn_reg_weight': 1.0,
+                'rcnn_corner_weight': 1.0,
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                'rcnn_iouscore_weight': 1.0 
+            }
+
+    POST_PROCESSING:
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
+        SCORE_THRESH: 0.3 
+        OUTPUT_RAW_SCORE: False
+
+        EVAL_METRIC: waymo
+
+        NMS_CONFIG:
+            MULTI_CLASSES_NMS: False
+            NMS_TYPE: nms_gpu
+            NMS_THRESH: 0.1
+            NMS_PRE_MAXSIZE: 4096
+            NMS_POST_MAXSIZE: 500
+
+OPTIMIZATION:
+    BATCH_SIZE_PER_GPU: 2
+    # BATCH_SIZE_PER_GPU: 3
+
+    NUM_EPOCHS: 30
+
+    OPTIMIZER: adam_onecycle
+    LR: 0.01
+    WEIGHT_DECAY: 0.001
+    MOMENTUM: 0.9
+
+    MOMS: [0.95, 0.85]
+    PCT_START: 0.4
+    DIV_FACTOR: 10
+    DECAY_STEP_LIST: [35, 45]
+    LR_DECAY: 0.1
+    LR_CLIP: 0.0000001
+
+    LR_WARMUP: False
+    WARMUP_EPOCH: 1
+
+    GRAD_NORM_CLIP: 10

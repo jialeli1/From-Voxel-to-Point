@@ -1,0 +1,208 @@
+CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
+
+
+DATA_CONFIG:
+    _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
+    DATA_AUGMENTOR:
+        DISABLE_AUG_LIST: ['placeholder']
+        AUG_CONFIG_LIST:
+            - NAME: gt_sampling
+              USE_ROAD_PLANE: True
+              DB_INFO_PATH:
+                  - kitti_dbinfos_train.pkl
+              PREPARE: {
+                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Cyclist:5'],
+                 filter_by_difficulty: [-1],
+              }
+
+              SAMPLE_GROUPS: ['Car:15','Pedestrian:10', 'Cyclist:10']
+              NUM_POINT_FEATURES: 4
+              DATABASE_WITH_FAKELIDAR: False
+              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
+              LIMIT_WHOLE_SCENE: False
+
+            - NAME: random_world_flip
+              ALONG_AXIS_LIST: ['x']
+
+            - NAME: random_world_rotation
+              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
+
+            - NAME: random_world_scaling
+              WORLD_SCALE_RANGE: [0.95, 1.05]
+
+MODEL:
+    NAME: MGAF3DSSD
+
+    VFE:
+        NAME: MeanVFE
+
+    BACKBONE_3D:
+        NAME: VoxelResBackBone8x
+
+    MAP_TO_BEV:
+        NAME: HeightCompression
+        NUM_BEV_FEATURES: 256
+
+    BACKBONE_2D:
+        NAME: DCNBEVBackbone
+        LAYER_NUMS: [5, 5, 5]
+        LAYER_STRIDES: [1, 2, 2]
+        NUM_FILTERS: [128, 256, 256]
+        USE_DCN: True
+        UPSAMPLE_STRIDES: [1, 2, 4]
+        NUM_UPSAMPLE_FILTERS: [256, 256, 256]
+
+    DENSE_HEAD:
+        NAME: CenterAFHeadSingle 
+        CLASS_AGNOSTIC: False
+
+        NUM_IOUSCORE_TRAINING_SAMPLES: 24
+        NUM_INFERENCE_SAMPLES: 50
+
+        SHARED_FC: [256]
+        SHARED_KS: [3]
+        USE_DCN: 'MDCN'
+        DP_RATIO: 0
+        HEADS_CONFIG: [
+            {
+                'name': 'hm',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 1,
+                'final_kernel': 1,
+                'head_conv': 128
+            },
+            {
+                'name': 'offset',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 2,
+                'final_kernel': 1,
+                'head_conv': 128                
+            },            
+            {
+                'name': 'height',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 1,
+                'final_kernel': 1,
+                'head_conv': 128                
+            },            
+            {
+                'name': 'dim',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 3,
+                'final_kernel': 1,
+                'head_conv': 128                
+            },
+            {
+                'name': 'rot',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'num_bins': 12,
+                'out_channel': 24,
+                'final_kernel': 1,
+                'head_conv': 128
+            },
+            {
+                'name': 'segm',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 1,
+                'final_kernel': 1,
+                'head_conv': 128
+            },
+            {
+                'name': 'iouscore',
+                'mod_bn': True,
+                'use_bn': True,
+                'dp_ratio': 0,
+                'out_channel': 1,
+                'final_kernel': 1,
+                'head_conv': 128
+            }
+        ]
+            
+
+        TARGET_ASSIGNER_CONFIG:
+            NAME: CenterTargetAssigner 
+            FEATURE_MAP_STRIDE: 8
+            GAUSSIAN_MINOVERLAP: 0.01 
+            GAUSSIAN_MINRADIUS: 2
+            MAX_OBJS: 50
+
+        LOSS_CONFIG:
+            HM_LOSS_CONFIG: {
+                'weight': 1.0,
+            }            
+            OFFSET_LOSS_CONFIG: {
+                'weight': 1.0,
+                'res_func': 'l1'
+            }
+            HEIGHT_LOSS_CONFIG: {
+                'weight': 1.0,
+                'res_func': 'l1'
+            }
+            DIM_LOSS_CONFIG: {
+                'weight': 1.0,
+                'res_func': 'l1'
+            }            
+            ROT_LOSS_CONFIG: {
+                'weight': 1.0,
+                'num_bins': 12
+            }
+            SEGM_LOSS_CONFIG: {
+                'weight': 1.0
+            }
+            CORNER_LOSS_CONFIG: {
+                'weight': 1.0
+            }            
+            IOUSCORE_LOSS_CONFIG: {
+                'weight': 1.0,
+                'iou_fg_thresh': 0.75,
+                'iou_bg_thresh': 0.25,
+            }        
+
+
+    POST_PROCESSING:
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
+        SCORE_THRESH: 0.501
+        OUTPUT_RAW_SCORE: False
+
+        EVAL_METRIC: kitti
+
+        NMS_CONFIG:
+            MULTI_CLASSES_NMS: False
+            NMS_TYPE: nms_gpu
+            NMS_THRESH: 0.1
+            NMS_PRE_MAXSIZE: 4096
+            NMS_POST_MAXSIZE: 500
+
+
+OPTIMIZATION:
+    BATCH_SIZE_PER_GPU: 4
+    NUM_EPOCHS: 50
+
+    OPTIMIZER: adam_onecycle
+    LR: 0.01
+    WEIGHT_DECAY: 0.01
+    MOMENTUM: 0.9
+
+    MOMS: [0.95, 0.85]
+    PCT_START: 0.4
+    DIV_FACTOR: 10
+    DECAY_STEP_LIST: [35, 45]
+    LR_DECAY: 0.1
+    LR_CLIP: 0.0000001
+
+    LR_WARMUP: False
+    WARMUP_EPOCH: 1
+
+    GRAD_NORM_CLIP: 10
